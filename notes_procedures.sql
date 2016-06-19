@@ -1,0 +1,11 @@
+DROP PROCEDURE IF EXISTS SELECT_ALL_RANDOM_NOTES;
+DELIMITER |
+CREATE PROCEDURE SELECT_ALL_RANDOM_NOTES()
+BEGIN
+SELECT Note.bin_uuid FROM Note INTO ret
+LEFT OUTER JOIN Task on Note.bin_uuid = Task.note
+LEFT OUTER JOIN Solution on Note.bin_uuid = Solution.note
+WHERE Task.note IS NULL AND Solution.note IS NULL;
+END |
+DELIMITER ;
+

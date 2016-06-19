@@ -1,0 +1,116 @@
+DROP FUNCTION IF EXISTS GET_TAG;
+DELIMITER | -- Get or create a tag
+CREATE FUNCTION GET_TAG(__name VARCHAR(45))
+RETURNS CHAR(36) -- Returns uuid
+BEGIN
+DECLARE _uuid CHAR(36);
+SELECT UNBINARIZE_UUID(Tag.bin_uuid) INTO _uuid FROM Tag WHERE name=__name;
+IF _uuid IS NULL THEN
+    SET _uuid = UUID();
+	INSERT INTO Tag SELECT BINARIZE_UUID(_uuid), __name;
+END IF;
+RETURN _uuid;
+END |
+DELIMITER ;
+
+DROP FUNCTION IF EXISTS GET_TAG_GROUP;
+DELIMITER | -- Get or create a tag group
+CREATE FUNCTION GET_TAG_GROUP(__name VARCHAR(45))
+RETURNS CHAR(36) -- Returns uuid
+BEGIN
+DECLARE _uuid CHAR(36);
+SELECT UNBINARIZE_UUID(TagGroup.bin_uuid) INTO _uuid FROM TagGroup WHERE name=__name;
+IF _uuid IS NULL THEN
+    SET _uuid = UUID();
+	INSERT INTO TagGroup SELECT BINARIZE_UUID(_uuid), __name;
+END IF;
+RETURN _uuid;
+END |
+
+
+DELIMITER ;
+
+DROP PROCEDURE IF EXISTS PUT_INTO_GROUP;
+DELIMITER |
+CREATE PROCEDURE PUT_INTO_GROUP(__tag BINARY(16), __group BINARY(16))
+BEGIN
+INSERT INTO TagGroupProc SELECT __tag, __group;
+END|
+DELIMITER ;
+
+DROP PROCEDURE IF EXISTS ADD_RELATION;
+DELIMITER | -- Add named relation between A and B
+CREATE PROCEDURE ADD_RELATION(__behaviour CHAR(4), __A BINARY(16), __B BINARY(16))
+BEGIN
+INSERT INTO GroupRelation SELECT __A, __B, __behaviour ON DUPLICATE KEY UPDATE A=A;
+INSERT INTO GroupRelation SELECT __B, __A, __behaviour ON DUPLICATE KEY UPDATE A=A;
+END |
+DELIMITER ;
+
+-- DROP IF EXISTS FUNCTION CALL_RELATION; -- zzz sql so bad
+-- DELIMITER |
+-- CREATE FUNCTION CALL_RELATION(__rel BINARY(16), __A BINARY(16), __B BINARY(16))
+-- RETURNS INT(1) -- returns 0 if successful
+-- BEGIN 
+-- IF NOT GET_LOCK('CALL_RELATION',5) THEN
+-- 	RETURN 1;
+-- END IF;
+-- SELECT function_to_call FROM GroupRelationBehaviour INTO @rel_func;
+-- SET @relation_statement = CONCAT(@rel_func,'(?,?)');
+-- PREPARE prep_relation_statement FROM @relation_statement;
+-- SET @_A = __A;
+-- SET @_B = __B;
+-- EXECUTE prep_relation_statement USING @_A, @_B;
+-- DEALLOCATE PREPARE prep_relation_statement;
+-- SELECT RELEASE_LOCK('CALL_RELATION');
+-- END |
+-- DELIMITER ;
+DROP PROCEDURE IF EXISTS DERIVED;
+DELIMITER |
+CREATE PROCEDURE DERIVED (__note BINARY(16), __A BINARY(16), __B BINARY(16)) -- B IS A CHILD OF A
+BEGIN
+	INSERT INTO NoteTagProc(note,tag) SELECT __note, TGP.tag FROM TagGroupProc AS TGP WHERE TGP.group = __B; 
+
+END |
+DELIMITER ;
+
+DROP PROCEDURE IF EXISTS MUTUALLY_EXCLUSIVE;
+DELIMITER |
+CREATE PROCEDURE MUTUALLY_EXCLUSIVE(__note BINARY(16), __A BINARY(16), __B BINARY(16)) 
+-- WE ASSUME THAT A IS MORE IMPORTANT
+-- THAN B
+BEGIN
+	DELETE FROM NoteTagProc WHERE NoteTagProc.note = __note AND NoteTagProc.tag IN
+	    (SELECT TGP.tag FROM TagGroupProc AS TGP WHERE TGP.group = __B);
+END |
+DELIMITER ;
+
+DROP PROCEDURE IF EXISTS ADD_TAGS;
+DELIMITER |
+CREATE PROCEDURE ADD_TAGS(__note BINARY(16), __tag BINARY(16)) -- Wrapper for adding tag and checking conditions
+BEGIN
+DECLARE _A BINARY(16);
+DECLARE _B BINARY(16); 
+DECLARE _behaviour CHAR(4);
+DECLARE done INT DEFAULT FALSE;
+DECLARE group_cur CURSOR FOR SELECT GR.A, GR.B , GR.behaviour FROM GroupRelation AS GR WHERE GR.A 
+    IN (SELECT TG.bin_uuid FROM TagGroup AS TG WHERE TG.bin_uuid IN 
+	(SELECT TGP.group FROM TagGroupProc AS TGP WHERE TGP.tag=__tag));
+DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+INSERT IGNORE INTO NoteTagProc SELECT __note, __tag;
+OPEN group_cur;
+read_loop: LOOP
+    FETCH group_cur INTO _A, _B, _behaviour; 
+	IF done THEN
+    LEAVE read_loop;
+	END IF;
+	IF UPPER(_behaviour) = 'DERV' THEN
+	CALL DERIVED(__note, _A, _B);
+	END IF;
+	IF UPPER(_behaviour) = 'MUTE' THEN
+	CALL MUTUALLY_EXCLUSIVE(__note, _A, _B);
+	END IF;
+    END LOOP;
+CLOSE group_cur;
+END |
+DELIMITER ;
